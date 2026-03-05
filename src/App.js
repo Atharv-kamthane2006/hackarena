@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut
+} from "firebase/auth";
 import { get, onValue, query, ref } from "firebase/database";
-import { db } from "./firebase";
+import { auth, db } from "./firebase";
 import StatusCard from "./components/StatusCard";
 import ActivityLog from "./components/ActivityLog";
 
@@ -87,6 +93,13 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [lastLockerReceiveAt, setLastLockerReceiveAt] = useState(null);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authMode, setAuthMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     try {
       const saved = localStorage.getItem("securelocker-theme");
@@ -122,8 +135,58 @@ export default function App() {
       });
   }, []);
 
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthReady(true);
+      if (user) {
+        setAuthError("");
+      }
+    });
+
+    return () => {
+      unsubAuth();
+    };
+  }, []);
+
+  const handleAuthSubmit = useCallback(
+    async (event) => {
+      event.preventDefault();
+      setAuthError("");
+
+      if (!email || !password) {
+        setAuthError("Enter both email and password.");
+        return;
+      }
+
+      setAuthBusy(true);
+      try {
+        if (authMode === "signup") {
+          await createUserWithEmailAndPassword(auth, email.trim(), password);
+        } else {
+          await signInWithEmailAndPassword(auth, email.trim(), password);
+        }
+      } catch (error) {
+        setAuthError(error?.message || "Authentication failed.");
+      } finally {
+        setAuthBusy(false);
+      }
+    },
+    [authMode, email, password]
+  );
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      setAuthError(error?.message || "Sign out failed.");
+    }
+  }, []);
+
   // Firebase listeners + polling fallback to avoid stale UI if realtime transport is unstable.
   useEffect(() => {
+    if (!isAuthReady || !currentUser) return undefined;
+
     const lockerRef = ref(db, "lockers/locker_01");
     const eventsRef = query(ref(db, "events"));
     const connectedRef = ref(db, ".info/connected");
@@ -168,7 +231,7 @@ export default function App() {
       unsubConnection();
       clearInterval(pollTimer);
     };
-  }, [parseEvents]);
+  }, [currentUser, isAuthReady, parseEvents]);
 
   // Timer to update "now" for connection status
   useEffect(() => {
@@ -176,10 +239,12 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const firebaseConnectionState = useMemo(
-    () => (isFirebaseConnected ? "Firebase Connected" : "Firebase Disconnected"),
-    [isFirebaseConnected]
-  );
+  const firebaseConnectionState = useMemo(() => {
+    if (authError && !currentUser) return "Auth Error";
+    if (!isAuthReady) return "Authenticating";
+    if (!currentUser) return "Not Signed In";
+    return isFirebaseConnected ? "Firebase Connected" : "Firebase Disconnected";
+  }, [authError, currentUser, isAuthReady, isFirebaseConnected]);
 
   const normalizedLastSeen = useMemo(
     () => normalizeEpochMs(lockerData.last_seen),
@@ -212,7 +277,89 @@ export default function App() {
   const doorAccent = getDoorAccent(lockerData.door);
   const vibrationAccent = getVibrationAccent(lockerData.vibration);
   const deviceAccent = deviceConnectionState === "ESP32 Offline" ? "danger" : "safe";
-  const firebaseAccent = isFirebaseConnected ? "safe" : "danger";
+  const firebaseAccent = firebaseConnectionState === "Firebase Connected" ? "safe" : "danger";
+
+  if (!isAuthReady) {
+    return (
+      <div className={`app-shell ${darkMode ? "theme-dark" : "theme-light"}`}>
+        <div className="app-content">
+          <section className="panel auth-panel">
+            <h2>Checking Authentication</h2>
+            <p className="subtitle">Please wait while Firebase initializes.</p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className={`app-shell ${darkMode ? "theme-dark" : "theme-light"}`}>
+        <div className="app-content auth-wrap">
+          <section className="panel auth-panel">
+            <h2>{authMode === "signup" ? "Create Account" : "Sign In"}</h2>
+            <p className="subtitle">Use Firebase Email/Password authentication.</p>
+
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
+              <label className="auth-label" htmlFor="auth-email">Email</label>
+              <input
+                id="auth-email"
+                className="auth-input"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+              />
+
+              <label className="auth-label" htmlFor="auth-password">Password</label>
+              <input
+                id="auth-password"
+                className="auth-input"
+                type="password"
+                autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Minimum 6 characters"
+              />
+
+              {authError ? <p className="auth-error">{authError}</p> : null}
+
+              <button className="auth-button" type="submit" disabled={authBusy}>
+                {authBusy
+                  ? "Please wait..."
+                  : authMode === "signup"
+                    ? "Sign Up"
+                    : "Sign In"}
+              </button>
+            </form>
+
+            <button
+              className="auth-switch"
+              type="button"
+              onClick={() => {
+                setAuthMode((prev) => (prev === "signup" ? "signin" : "signup"));
+                setAuthError("");
+              }}
+            >
+              {authMode === "signup"
+                ? "Already have an account? Sign in"
+                : "Need an account? Sign up"}
+            </button>
+
+            <button
+              className="theme-toggle"
+              onClick={toggleDarkMode}
+              aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+              id="theme-toggle-btn"
+            >
+              {darkMode ? <SunIcon /> : <MoonIcon />}
+            </button>
+          </section>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`app-shell ${darkMode ? "theme-dark" : "theme-light"}`}>
@@ -234,7 +381,7 @@ export default function App() {
 
           <div className="header-actions">
             <div
-              className={`connection-badge ${isFirebaseConnected ? "online" : "offline"}`}
+              className={`connection-badge ${firebaseConnectionState === "Firebase Connected" ? "online" : "offline"}`}
               id="firebase-connection-indicator"
             >
               <span className="connection-dot" />
@@ -248,6 +395,15 @@ export default function App() {
               <span className="connection-dot" />
               <span>{deviceConnectionState}</span>
             </div>
+
+            <button
+              className="auth-logout"
+              onClick={handleSignOut}
+              type="button"
+              aria-label="Sign out"
+            >
+              Sign Out
+            </button>
 
             <button
               className="theme-toggle"
@@ -283,7 +439,7 @@ export default function App() {
           <div className={`stat-card ${firebaseAccent}-accent`}>
             <div className="stat-label">Firebase</div>
             <div className={`stat-value ${firebaseAccent}`}>
-              {isFirebaseConnected ? "Connected" : "Disconnected"}
+              {firebaseConnectionState.replace("Firebase ", "")}
             </div>
           </div>
           <div className={`stat-card ${deviceAccent}-accent`}>
