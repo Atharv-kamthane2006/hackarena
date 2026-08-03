@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import emailjs from "@emailjs/browser";
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
@@ -12,6 +13,11 @@ import ActivityLog from "./components/ActivityLog";
 
 const HEARTBEAT_INTERVAL_MS = 10000;
 const DEVICE_OFFLINE_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * 3;
+const EMAIL_ALERT_COOLDOWN_MS = 300000; // 5 minutes
+const EMAILJS_SERVICE_ID = process.env.REACT_APP_EMAILJS_SERVICE_ID || "service_pd301ad";
+const EMAILJS_TEMPLATE_ID = process.env.REACT_APP_EMAILJS_TEMPLATE_ID || "template_h4ci46v";
+const EMAILJS_PUBLIC_KEY = process.env.REACT_APP_EMAILJS_PUBLIC_KEY || "u6Jc7HgWQFMiiMeZT";
+const EMAIL_ALERT_TARGET = "atharvkamthane@gmail.com";
 
 function normalizeEpochMs(rawTimestamp) {
   const n = Number(rawTimestamp);
@@ -100,6 +106,8 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const lastEmailSentAt = useRef(0);
+  const previousAlertState = useRef(false);
   const [darkMode, setDarkMode] = useState(() => {
     try {
       const saved = localStorage.getItem("securelocker-theme");
@@ -116,6 +124,61 @@ export default function App() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const normalizedStatus = String(lockerData.status || "").trim().toLowerCase();
+    const isVibrationDetected = lockerData.vibration === "detected";
+    const isBreakdown = ["breakdown", "forced_entry", "fault", "error"].includes(normalizedStatus);
+    const isAlertActive = isVibrationDetected || isBreakdown;
+
+    if (!isAlertActive) {
+      previousAlertState.current = false;
+      return;
+    }
+
+    const nowTs = Date.now();
+    const isNewAlert = !previousAlertState.current;
+    const cooldownComplete = nowTs - lastEmailSentAt.current > EMAIL_ALERT_COOLDOWN_MS;
+
+    if ((isNewAlert || cooldownComplete) && EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY) {
+      const eventType = isVibrationDetected ? "vibration_detected" : "breakdown";
+      const message =
+        eventType === "vibration_detected"
+          ? "ALERT: Vibration detected on SecureLocker_01. Possible tampering."
+          : "ALERT: Breakdown/fault state detected on SecureLocker_01.";
+
+      lastEmailSentAt.current = nowTs;
+      previousAlertState.current = true;
+
+      emailjs
+        .send(
+          EMAILJS_SERVICE_ID,
+          EMAILJS_TEMPLATE_ID,
+          {
+            email: EMAIL_ALERT_TARGET,
+            to_email: EMAIL_ALERT_TARGET,
+            name: currentUser.displayName || "SecureLocker User",
+            message,
+            event_type: eventType,
+            status: lockerData.status || "unknown",
+            locker_id: "locker_01",
+            timestamp: new Date(nowTs).toLocaleString()
+          },
+          EMAILJS_PUBLIC_KEY
+        )
+        .then(() => {
+          console.log("Alert email sent successfully.");
+        })
+        .catch((error) => {
+          console.error("Failed to send alert email:", error);
+        });
+      return;
+    }
+
+    previousAlertState.current = true;
+  }, [currentUser, lockerData.status, lockerData.vibration]);
 
   const parseEvents = useCallback((rawValue, snapshotReceivedAt) => {
     const value = rawValue || {};
