@@ -2,6 +2,9 @@
 
 SecureLocker is an IoT security-monitoring project built around an ESP32 locker controller and a React dashboard. The device reports door and vibration readings to Firebase Realtime Database. Authenticated users can monitor the locker in real time and receive email alerts for suspicious activity.
 
+<img width="806" height="545" alt="image" src="https://github.com/user-attachments/assets/849ab88b-a8fb-4301-8bf8-4db81c99822c" />
+
+
 ## Features
 
 - Firebase Email/Password sign-in and registration
